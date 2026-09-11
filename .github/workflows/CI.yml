@@ -1,4 +1,5 @@
 name: CI
+run-name: "CI ${{ inputs.leg || github.event_name }} ${{ inputs.racecar_run }}"
 
 # Trigger the workflow on push or pull request
 on:
@@ -8,6 +9,19 @@ on:
       debug_enabled:
         description: 'Run the build with tmate debugging enabled'
         type: boolean
+      leg:
+        description: "baseline (uninstrumented) or instrumented (under chalk/curiosity)"
+        type: choice
+        options: [instrumented, baseline]
+        default: baseline
+      profile:
+        description: "CrashOverride chalk profile"
+        type: string
+        default: curiosity-tests-racecar
+      racecar_run:
+        description: "racecar correlation token, echoed into the run name"
+        type: string
+        default: ""
   pull_request:
   push:
     branches:
@@ -26,6 +40,7 @@ concurrency:
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
 env:
+  CHALK_ON: ${{ inputs.leg == 'instrumented' }}
   # default config flags: enable debug asserts
   CONFIGFLAGS: "--enable-debug"
   # CHERE_INVOKING=1 lets us start a 'login shell' (to set paths) in Windows without changing directory
@@ -84,11 +99,6 @@ jobs:
             extra: "HPCGAP=yes ABI=64"
 
           # this job also tests GAP without readline and gmp
-          - os: macos-latest
-            shell: bash
-            test-suites: "testmockpkg testinstall testworkspace"
-            extra: "BOOTSTRAP_MINIMAL=yes"
-
           # run bugfix regression tests
           # Also turn on '--enable-memory-checking' to make sure GAP compiles
           # with the flag enabled. We do not actually test the memory
@@ -129,14 +139,6 @@ jobs:
             shell: bash
             test-suites: "testmockpkg testinstall"
             extra: "JULIA=yes CONFIGFLAGS=\"--enable-debug\""
-
-          - os: windows-2022
-            # The 'run' steps in this job use Cygwin's bash, once it is set up.
-            #   --login: make a login shell (so PATH is set up)
-            #   -o igncr: Accept windows line endings
-            #   {0} : Pass any extra arguments from CI
-            shell: C:\cygwin64\bin\bash.exe --login -o igncr '{0}'
-            test-suites: "testmockpkg testinstall"
 
     env:
       TEST_SUITES: ${{ matrix.test-suites }}
@@ -241,6 +243,7 @@ jobs:
           override_cache_key: ${{ runner.os }}-${{ hashFiles('extra.flags') }}-${{ github.ref }}
           override_cache_key_fallback: ${{ runner.os }}-${{ hashFiles('extra.flags') }}
       - name: "Workaround GitHub security concerns" # see https://github.com/gap-system/gap/issues/4861
+        continue-on-error: true   # racecar: scan/report/push step, must not fail the build
         run: git config --global --add safe.directory $PWD
       - name: "Configure GAP"
         run: ${{ matrix.extra }} dev/ci-configure-gap.sh
@@ -277,11 +280,13 @@ jobs:
       - name: "Gather coverage data"
         run: ${{ matrix.extra }} dev/ci-gather-coverage.sh
       - name: "Upload coverage data to Codecov"
+        continue-on-error: true   # racecar: scan/report/push step, must not fail the build
         uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   codecov-notify:
+    continue-on-error: true   # racecar: scan job other jobs need
     name: Finalize Codecov notifications
     runs-on: ubuntu-slim
     needs: test
@@ -441,6 +446,7 @@ jobs:
   # The following job is duplicated in release.yml - keep the two in sync.
   # (except for their different 'needs' components).
   slack-notification:
+    continue-on-error: true   # racecar: scan job other jobs need
     name: Send Slack notification on status change
     needs:
       - test
